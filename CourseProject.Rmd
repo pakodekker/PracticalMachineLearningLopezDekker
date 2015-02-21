@@ -1,0 +1,171 @@
+---
+title: "Course Project"
+author: "Paco López Dekker"
+date: "Tuesday, February 17, 2015"
+output: html_document
+---
+
+This is the write-up for Practical Machine Learning Course project.
+
+First we read the data from the csv source.
+
+```{r}
+library(caret); library(ggplot2);
+pml_dir <- "C:/Users/lope_fr/Documents/Calaix/Coursera/MachineLearning"
+setwd(pml_dir) 
+HARdata_raw = read.csv("pml-training.csv")
+```
+Because some of the training algorithms need long computation times, I have saved some of the models in files. Here I set a Boolean variable to load the stored modeld or redo the training
+```{r}
+use_saved <- TRUE
+```
+Now let us sanitize the data a bit by removing the NA dominated columns. We will also try to remove information tha could be correlated with the outcome without being useful for a general model: user_name, timetamps
+```{r}
+na_count <- colSums(is.na(HARdata_raw))
+na_cols <- which(na_count > dim(HARdata_raw)[1]/2)
+HARdata <- HARdata_raw[, -na_cols]
+HARdata <- HARdata[,-c(1,2,3,4,5,6,7)]
+rm(HARdata_raw)
+```
+Create typical training and testing data set
+```{r}
+inTrain <- createDataPartition(y=HARdata$classe, p=0.6, list=FALSE)
+HARtraining <- HARdata[inTrain,]
+HARtesting <- HARdata[-inTrain,]
+```
+Inspection of variables using featureplots to look for obvious indicators. Things that seem useful:
+(roll_arm, pitch_arm, yaw_arm)
+(roll_forearm, pitch_forearm, yaw_forearm)
+maybe
+(accel_arm_x, accel_arm_y, accel_arm_z)
+total_accel_dumbbell
+(accel_dumbbell_x, accel_arm_y, accel_dumbbell_z)
+(magnet_dumbbell_x, magne_dumbbell_y, magnet_dumbbell_z)
+For example:
+```{r qplot}
+clear_feat <- c("roll_arm", "pitch_arm", "yaw_arm", "roll_forearm", "pitch_forearm", "yaw_forearm")
+maybe_feat <- c("accel_arm_x", "accel_arm_y", "accel_arm_z", "total_accel_dumbbell", 
+                "accel_dumbbell_x","accel_dumbbell_y", "accel_dumbbell_z",
+                "magnet_dumbbell_x", "magnet_dumbbell_y", "magnet_dumbbell_z")
+sel_feat <- c(clear_feat, maybe_feat)
+#featurePlot(x=HARtraining[,clear_feat],y=HARtraining$classe,plot="pairs")
+```
+Now lets try a tree partition predictor based on identified features
+```{r}
+clearTree <- train(HARtraining[,clear_feat],HARtraining$classe, method="rpart")
+selTree <- train(HARtraining[,sel_feat],HARtraining$classe, method="rpart")
+```
+And we can look a bit at how they are doing in sample
+```{r}
+pred_clear_training <- predict(clearTree,HARtraining)
+pred_sel_training <- predict(selTree,HARtraining)
+table(pred_clear_training,HARtraining$classe)
+table(pred_sel_training,HARtraining$classe)
+```
+Or see the predicted performance by the training algorithm
+```{r}
+print(clearTree)
+print(selTree)  
+```
+The results are quite bad (in particular since I at writing I know what I get later). The interesting thing is that although using more features gets more A (correctly executed exercise) right, it is worse for other classes.
+
+Basic Preprocessing
+---
+I do some scentering and scaling of the scalable features. Here I also have removed "factor" features after realizing that they had no values for most of the rows in the data set. Probably this scaling was not really needed, since the method used are based on decision trees, but it will not hurt and it may be useful for some algorithms.
+```{r}
+training_classe <- HARtraining$classe
+testing_classe <- HARtesting$classe
+feat_cols <- which(colnames(HARtraining) != "classe")
+scalable_cols = which(sapply(HARtraining[,feat_cols], class) != "factor")
+preCenterScale <- preProcess(HARtraining[,scalable_cols],method=c("center","scale"))
+HARtraining <- predict(preCenterScale,HARtraining[,scalable_cols])
+HARtesting <- predict(preCenterScale,HARtesting[,scalable_cols])
+HARtraining$classe <- training_classe
+HARtesting$classe <- testing_classe
+feat_cols <- which(colnames(HARtraining) != "classe")
+
+```
+Now lets try boosting with the selected feature set (later we do PCA). Using gmb, since with the PCA reduced variables it seems to work better (see further below)
+```{r}
+if (use_saved) {
+  load("sel_gbmBoostClassifier.Rdata")
+} else {
+  sel_gbmBoostClassifier <- train(HARtraining[,sel_feat], training_classe,
+                                  method="gbm",verbose=FALSE)
+  save(sel_gbmBoostClassifier,file="sel_gbmBoostClassifier.Rdata")
+}
+print(sel_gbmBoostClassifier)
+```
+
+Alternatively, let us see how the random forest performs. There are many available in caret, but let us just stick to the one used in the course.
+```{r}
+if (use_saved) {
+  load('sel_rfClassifier.Rdata')  
+} else {
+  sel_rfClassifier <- train(HARtraining[,sel_feat], training_classe, method="rf",
+                            trControl=trainControl(method="cv",number=5),
+                            prox=TRUE,allowParallel=TRUE)
+  save(sel_rfClassifier, file='sel_rfClassifier.Rdata')
+}
+print(sel_rfClassifier)
+```
+And here we smile seeing the 96% predicted accuracy.
+
+
+---
+Principal Components Analysis
+---
+Previously, we had reduced the set of features manually. Now lets do it blindly using preprocessing, see how well we do.
+```{r}
+prePCA <- preProcess(HARtraining[,feat_cols],method="pca",thres=0.95)
+HARtrainingPCA <- predict(prePCA,HARtraining[,feat_cols])
+HARtestingPCA <- predict(prePCA,HARtesting[,feat_cols])
+HARtrainingPCA$classe <- training_classe
+HARtestingPCA$classe <- testing_classe
+```
+Now I try a simple decision tree with PCA
+```{r}
+PCATree <- train(classe ~ .,data=HARtrainingPCA, method="rpart")
+pred_PCA_training <- predict(PCATree,HARtrainingPCA)
+table(pred_PCA_training,training_classe)
+```
+As before, a simple tree does not seem to perform well.
+Let us try boosting using gbm, and Adaboost on the PCA tranformed data
+```{r}
+if (use_saved) {
+  load("gbmBoostClassifier.Rdata")
+  load("AdaBoostClassifier.Rdata")
+} else {
+  gbmBoostClassifier <- train(classe ~ ., method="gbm",data=HARtrainingPC,
+                              verbose=FALSE)
+  AdaBoostClassifier <- train(classe ~ ., method="AdaBoost.M1",
+                              data=HARtrainingPCA)
+  save(gbmBoostClassifier,file="gbmBoostClassifier.Rdata")
+  save(AdaBoostClassifier,file="AdaBoostClassifier.Rdata")     
+}
+print(gbmBoostClassifier)
+print(AdaBoostClassifier)
+```
+Here we learn that the gbm algorithm yields better results than Ada Boost for this particular problem. But also we see that working with the manually selected features was providing better results.
+
+See again how the Random forest does (expected to do better)
+```{r}
+if (use_saved) {
+  load("PCA_rfClassifier.Rdata")
+} else {
+  PCA_rfClassifier <- train(classe ~ ., data=HARtrainingPCA, method="rf",
+                            trControl=trainControl(method="cv",number=5),
+                            prox=TRUE,allowParallel=TRUE)
+}
+print(PCA_rfClassifier)
+```
+Which results in very similar performance to the random tree with hand selected features, but with apparently a more reliable estimate of the accuracy.
+
+```{r}
+pred_gbm_training <- predict(gbmBoostClassifier,HARtrainingPCA)
+table(pred_gbm_training,training_classe)
+pred_AdaBoost_training <- predict(AdaBoostClassifier,HARtrainingPCA)
+table(pred_AdaBoost_training,training_classe)
+
+```
+
