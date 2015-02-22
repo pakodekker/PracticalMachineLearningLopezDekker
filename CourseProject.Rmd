@@ -7,6 +7,23 @@ output: html_document
 
 This is the write-up for Practical Machine Learning Course project.
 
+# Summary
+
+## Things done
+* Removed some useless information or information that I choose not to use (like the names of the users, which could help the prediction but would make the models not applicable to new users).
+* Separated data in training and testing data sets.
+* Inspected data using feature plots to look for promising indicators. Made a list of most promising ones.
+* Did some basic pre-processing (scaling and centering).
+* Trained several models using selected indicators using Boosting (gbm) and Random Forest and with simple decission trees. 
+* Did a Principal Component Analysis, with two threshold levels (0.9 and 0.95)
+* Trained several models using selected indicators using Boosting (gbm and Ada Boost) and Random Forest.
+
+## Results summary
+
+Best model was achieved with a Random Forest model based on PCA of (theshold 0.95) features.The __achieved accuracy is of 97.4%__. The random model based on selected features achieved almost the same performance (96.9% accuracy). For practical implementation probably one would prefer this model, since it requires fewer indicators.
+
+# Data preparation
+
 First we read the data from the csv source.
 
 ```{r}
@@ -18,6 +35,7 @@ HARdata_raw = read.csv("pml-training.csv")
 Because some of the training algorithms need long computation times, I have saved some of the models in files. Here I set a Boolean variable to load the stored modeld or redo the training
 ```{r}
 use_saved <- TRUE
+set.seed(1234)
 ```
 Now let us sanitize the data a bit by removing the NA dominated columns. We will also try to remove information tha could be correlated with the outcome without being useful for a general model: user_name, timetamps
 ```{r}
@@ -48,7 +66,7 @@ maybe_feat <- c("accel_arm_x", "accel_arm_y", "accel_arm_z", "total_accel_dumbbe
                 "accel_dumbbell_x","accel_dumbbell_y", "accel_dumbbell_z",
                 "magnet_dumbbell_x", "magnet_dumbbell_y", "magnet_dumbbell_z")
 sel_feat <- c(clear_feat, maybe_feat)
-#featurePlot(x=HARtraining[,clear_feat],y=HARtraining$classe,plot="pairs")
+featurePlot(x=HARtraining[,clear_feat],y=HARtraining$classe,plot="pairs")
 ```
 Now lets try a tree partition predictor based on identified features
 ```{r}
@@ -69,9 +87,9 @@ print(selTree)
 ```
 The results are quite bad (in particular since I at writing I know what I get later). The interesting thing is that although using more features gets more A (correctly executed exercise) right, it is worse for other classes.
 
-Basic Preprocessing
----
-I do some scentering and scaling of the scalable features. Here I also have removed "factor" features after realizing that they had no values for most of the rows in the data set. Probably this scaling was not really needed, since the method used are based on decision trees, but it will not hurt and it may be useful for some algorithms.
+##Basic Preprocessing
+
+I do some centering and scaling of the scalable features. Here I also have removed "factor" features after realizing that they had no values for most of the rows in the data set. Probably this scaling was not really needed, since the method used are based on decision trees, but it will not hurt and it may be useful for some algorithms.
 ```{r}
 training_classe <- HARtraining$classe
 testing_classe <- HARtesting$classe
@@ -112,17 +130,37 @@ print(sel_rfClassifier)
 And here we smile seeing the 96% predicted accuracy.
 
 
----
-Principal Components Analysis
----
+
+## Principal Components Analysis
+
 Previously, we had reduced the set of features manually. Now lets do it blindly using preprocessing, see how well we do.
 ```{r}
-prePCA <- preProcess(HARtraining[,feat_cols],method="pca",thres=0.95)
+if (use_saved) {
+  load("prePCA.Rdata")  
+} else {
+  prePCA <- preProcess(HARtraining[,feat_cols],method="pca",thres=0.95)
+  save(prePCA, file="prePCA.Rdata")  
+}
 HARtrainingPCA <- predict(prePCA,HARtraining[,feat_cols])
 HARtestingPCA <- predict(prePCA,HARtesting[,feat_cols])
 HARtrainingPCA$classe <- training_classe
 HARtestingPCA$classe <- testing_classe
 ```
+A second set with less principal components
+```{r}
+if (use_saved) {
+  load("prePCA90.Rdata")  
+} else {
+  prePCA90 <- preProcess(HARtraining[,feat_cols],method="pca",thres=0.9)
+  save(prePCA90, file="prePCA90.Rdata")  
+}
+HARtrainingPCA90 <- predict(prePCA90,HARtraining[,feat_cols])
+HARtestingPCA90 <- predict(prePCA90,HARtesting[,feat_cols])
+HARtrainingPCA90$classe <- training_classe
+HARtestingPCA90$classe <- testing_classe
+```
+
+
 Now I try a simple decision tree with PCA
 ```{r}
 PCATree <- train(classe ~ .,data=HARtrainingPCA, method="rpart")
@@ -134,13 +172,16 @@ Let us try boosting using gbm, and Adaboost on the PCA tranformed data
 ```{r}
 if (use_saved) {
   load("gbmBoostClassifier.Rdata")
+} else {
+  gbmBoostClassifier <- train(classe ~ ., method="gbm",data=HARtrainingPCA,
+                              verbose=FALSE)
+  save(gbmBoostClassifier,file="gbmBoostClassifier.Rdata")  
+}
+if (use_saved) {
   load("AdaBoostClassifier.Rdata")
 } else {
-  gbmBoostClassifier <- train(classe ~ ., method="gbm",data=HARtrainingPC,
-                              verbose=FALSE)
   AdaBoostClassifier <- train(classe ~ ., method="AdaBoost.M1",
                               data=HARtrainingPCA)
-  save(gbmBoostClassifier,file="gbmBoostClassifier.Rdata")
   save(AdaBoostClassifier,file="AdaBoostClassifier.Rdata")     
 }
 print(gbmBoostClassifier)
@@ -156,16 +197,58 @@ if (use_saved) {
   PCA_rfClassifier <- train(classe ~ ., data=HARtrainingPCA, method="rf",
                             trControl=trainControl(method="cv",number=5),
                             prox=TRUE,allowParallel=TRUE)
+  save(PCA_rfClassifier,file="PCA_rfClassifier.Rdata")
 }
 print(PCA_rfClassifier)
 ```
 Which results in very similar performance to the random tree with hand selected features, but with apparently a more reliable estimate of the accuracy.
 
+And for the second PCA set
 ```{r}
-pred_gbm_training <- predict(gbmBoostClassifier,HARtrainingPCA)
-table(pred_gbm_training,training_classe)
-pred_AdaBoost_training <- predict(AdaBoostClassifier,HARtrainingPCA)
-table(pred_AdaBoost_training,training_classe)
-
+if (use_saved) {
+  load("PCA90_rfClassifier.Rdata")
+} else {
+  PCA90_rfClassifier <- train(classe ~ ., data=HARtrainingPCA90, method="rf",
+                              trControl=trainControl(method="cv",number=5),
+                              prox=TRUE,allowParallel=TRUE)
+  save(PCA90_rfClassifier,file="PCA90_rfClassifier.Rdata")
+}
+print(PCA90_rfClassifier)
 ```
+This seems to perform a bit worse.
+
+
+# Testing
+
+Now I do some testing for the two models that work best and, for illustration, for one that doesn't work that well.
+
+## Random Forest with hand-selected indicators
+```{r}
+sel_rf_test_pred <- predict(sel_rfClassifier, HARtesting[,sel_feat])
+sel_rf_confusion <-confusionMatrix(sel_rf_test_pred, testing_classe)
+plot1 <- ggplot(as.data.frame(sel_rf_confusion$table))
+plot1 + geom_tile(aes(x=Prediction, y=Reference, fill=Freq)) + scale_x_discrete(name="Actual Class") + scale_y_discrete(name="Predicted Class") + scale_fill_gradient(breaks=seq(from=-.5, to=4, by=.2)) + labs(fill="Normalized\nFrequency")
+print(sel_rf_confusion)
+```
+
+## Random Forest with Principal Components
+```{r}
+PCA_rf_test_pred <- predict(PCA_rfClassifier, HARtestingPCA)
+PCA_rf_confusion <- confusionMatrix(PCA_rf_test_pred, testing_classe)
+plot2 <- ggplot(as.data.frame(PCA_rf_confusion$table))
+plot2 + geom_tile(aes(x=Prediction, y=Reference, fill=Freq)) + scale_x_discrete(name="Actual Class") + scale_y_discrete(name="Predicted Class") + scale_fill_gradient(breaks=seq(from=-.5, to=4, by=.2)) + labs(fill="Normalized\nFrequency")
+print(PCA_rf_confusion)
+```
+
+## gbm Boosting with Principal Compoments
+
+This one will be worse, but it is included for illustration.
+```{r}
+PCA_gbm_test_pred <- predict(gbmBoostClassifier, HARtestingPCA)
+PCA_gbm_confusion <- confusionMatrix(PCA_gbm_test_pred, testing_classe)
+plot3 <- ggplot(as.data.frame(PCA_gbm_confusion$table))
+plot3 + geom_tile(aes(x=Prediction, y=Reference, fill=Freq)) + scale_x_discrete(name="Actual Class") + scale_y_discrete(name="Predicted Class") + scale_fill_gradient(breaks=seq(from=-.5, to=4, by=.2)) + labs(fill="Normalized\nFrequency")
+print(PCA_gbm_confusion)
+```
+
 
